@@ -6,6 +6,7 @@ class User(models.Model):
     id_user = models.AutoField(primary_key=True)
     email = models.EmailField(unique=True)
     parola = models.CharField(max_length=128)
+    avatar = models.ImageField(upload_to="avatars/", blank=True, null=True)
 
     def __str__(self) -> str:
         return self.email

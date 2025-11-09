@@ -19,7 +19,13 @@
                     <a class="nav__login-link" href="{% url 'backend:landing' %}">Map</a>
                     {% if user_name %}
                     <div class="nav__profile">
-                        <div class="nav__avatar">{{ user_initials|default:"OS" }}</div>
+                        <div class="nav__avatar">
+                            {% if user_avatar_url %}
+                            <img src="{{ user_avatar_url }}" alt="{{ user_name }}">
+                            {% else %}
+                            {{ user_initials|default:"OS" }}
+                            {% endif %}
+                        </div>
                         <div class="nav__profile-text">
                             <p class="nav__profile-name">{{ user_name }}</p>
                             <div class="nav__profile-actions">

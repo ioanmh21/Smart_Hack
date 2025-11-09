@@ -60,7 +60,7 @@
                     <span>Nu ai cont?</span>
                 </div>
 
-                <form class="login__form login__form--secondary" method="post">
+                <form class="login__form login__form--secondary" method="post" enctype="multipart/form-data">
                     {% csrf_token %}
                     <input type="hidden" name="action" value="register">
                     <label class="login__label">
@@ -70,6 +70,10 @@
                     <label class="login__label">
                         Password
                         <input type="password" name="password" placeholder="Seteaza o parola sigura" required>
+                    </label>
+                    <label class="login__label">
+                        Profile photo (optional)
+                        <input type="file" name="avatar" accept="image/*">
                     </label>
                     <button type="submit" class="login__submit login__submit--outline">Creeaza cont</button>
                 </form>

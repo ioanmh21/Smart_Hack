@@ -323,7 +323,8 @@ def login_view(request):
                 return redirect("backend:landing")
         elif action == "register":
             context["register_initial"] = email
-            context.update(_handle_registration(email, password))
+            avatar_file = request.FILES.get("avatar")
+            context.update(_handle_registration(email, password, avatar_file))
         else:
             context.update(
                 {
@@ -501,14 +502,17 @@ def _handle_login(email: str, password: str) -> dict:
     return {"message": "Parola introdusa nu este corecta.", "message_type": "error"}
 
 
-def _handle_registration(email: str, password: str) -> dict:
+def _handle_registration(email: str, password: str, avatar_file=None) -> dict:
     if not email or not password:
         return {"message": "Completeaza emailul si parola pentru inregistrare.", "message_type": "error"}
 
     if User.objects.filter(email__iexact=email).exists():
         return {"message": "Exista deja un utilizator cu acest email.", "message_type": "error"}
 
-    User.objects.create(email=email, parola=make_password(password))
+    user = User(email=email, parola=make_password(password))
+    if avatar_file:
+        user.avatar = avatar_file
+    user.save()
     return {"message": "Cont creat cu succes. Te poti autentifica acum!", "message_type": "success"}
 
 
@@ -524,19 +528,23 @@ def _get_authenticated_user(request):
 
 
 def _build_user_context(request):
-    email = request.session.get("user_email")
-    if not email:
+    user = _get_authenticated_user(request)
+    if not user:
         return {}
 
+    email = user.email
     local_part = email.split("@")[0]
     tokens = [token for token in local_part.replace("-", " ").replace("_", " ").split() if token]
     initials = "".join(token[0] for token in tokens) or email[:2]
 
-    return {
+    context = {
         "user_name": local_part.title(),
         "user_initials": initials[:2].upper(),
         "user_email": email,
     }
+    if user.avatar:
+        context["user_avatar_url"] = user.avatar.url
+    return context
 
 
 def _resolve_date(date_str: str | None):
