@@ -1,0 +1,94 @@
+{# RAG chat widget shared include - visible only when authenticated #}
+{% if user_name %}
+  <div class="messenger-button" id="open-chat-btn" aria-label="Open chat" title="Open chat">
+    <span aria-hidden="true">💬</span>
+  </div>
+
+  <div class="chat-window" id="chat-rag-window" role="dialog" aria-modal="false" aria-labelledby="rag-chat-title">
+    <div class="chat-header">
+      <strong id="rag-chat-title">RAG Chatbot</strong>
+      <button id="close-chat-btn" aria-label="Close chat">&times;</button>
+    </div>
+
+    <div class="chat-body" id="chat-body">
+      <div class="message received">Salut! Intreaba-ma ceva despre baza de date.</div>
+    </div>
+
+    <div class="chat-footer">
+      <input type="text" id="chat-input" placeholder="Scrie un mesaj..." aria-label="Type a message">
+      <button id="send-btn" aria-label="Trimite">➤</button>
+    </div>
+  </div>
+
+  <script>
+    (function() {
+      var openBtn = document.getElementById('open-chat-btn');
+      var closeBtn = document.getElementById('close-chat-btn');
+      var chatWindow = document.getElementById('chat-rag-window');
+      var sendBtn = document.getElementById('send-btn');
+      var input = document.getElementById('chat-input');
+      var chatBody = document.getElementById('chat-body');
+      var sending = false;
+      if (!openBtn || !closeBtn || !chatWindow) return;
+
+      openBtn.addEventListener('click', function () {
+        chatWindow.classList.toggle('visible');
+        if (chatWindow.classList.contains('visible')) {
+          setTimeout(function(){ input && input.focus(); }, 100);
+        }
+      });
+
+      closeBtn.addEventListener('click', function () {
+        chatWindow.classList.remove('visible');
+      });
+
+      function appendMessage(text, cls) {
+        var div = document.createElement('div');
+        div.className = 'message ' + (cls || '');
+        div.textContent = text;
+        chatBody.appendChild(div);
+        chatBody.scrollTop = chatBody.scrollHeight;
+      }
+
+      async function sendMessage() {
+        var q = (input.value || '').trim();
+        if (!q || sending) return;
+        sending = true;
+        appendMessage(q, 'sent');
+        input.value = '';
+        try {
+          var resp = await fetch('/api/chat/sql/', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            credentials: 'same-origin',
+            body: JSON.stringify({ question: q })
+          });
+          var data = null;
+          try { data = await resp.json(); } catch (_) {}
+          if (!resp.ok) {
+            var base = (data && data.error) ? data.error : 'Eroare server';
+            var extra = [];
+            if (data && data.details) extra.push(String(data.details));
+            if (data && data.hint) extra.push(String(data.hint));
+            if (data && data.db_url) extra.push('db: ' + String(data.db_url));
+            if (resp.status === 429 && data && data.retry_after_seconds) {
+              extra.push('Retry in ~' + Math.ceil(Number(data.retry_after_seconds)) + 's');
+            }
+            appendMessage(base + (extra.length ? ' — ' + extra.join(' | ') : ''), 'received');
+            return;
+          }
+          appendMessage(data && data.answer ? data.answer : '(fara raspuns)', 'received');
+        } catch (e) {
+          appendMessage('Eroare: ' + (e && e.message ? e.message : 'necunoscuta'), 'received');
+        } finally {
+          sending = false;
+        }
+      }
+
+      if (sendBtn) sendBtn.addEventListener('click', sendMessage);
+      if (input) input.addEventListener('keydown', function(e){
+        if (e.key === 'Enter') sendMessage();
+      });
+    })();
+  </script>
+{% endif %}

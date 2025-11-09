@@ -1,13 +1,18 @@
 import json
+import os
+from urllib.parse import urlparse, parse_qsl, urlencode, urlunparse
+from pathlib import Path
 from datetime import datetime, time
 
 from django.contrib import messages
+from django.conf import settings
 from django.contrib.auth.hashers import check_password, make_password
 from django.db import IntegrityError
 from django.http import JsonResponse
 from django.shortcuts import redirect, render
 from django.urls import reverse
 from django.utils import timezone
+from django.views.decorators.csrf import csrf_exempt
 from django.views.decorators.http import require_GET, require_http_methods, require_POST
 
 from .models import Obiect, Rezervare, User
@@ -592,3 +597,344 @@ def _build_slot_payload(obiect, target_date, current_user_email: str | None):
             }
         )
     return slots
+
+
+@csrf_exempt
+@require_POST
+def chat_sql_api(request):
+    """
+    POST /api/chat/sql/
+    Body: { "question": "..." }
+
+    - Reads GOOGLE_API_KEY and DATABASE_URL (or CHAT_DATABASE_URL) from environment
+      (or uses hardcoded values from settings for local/testing).
+    - Runs a LangChain Text-to-SQL agent against the configured database using Gemini.
+    - Returns JSON: { "answer": "..." } or { "error": "..." }.
+    """
+    # Optional: require our session-auth user
+    user = _get_authenticated_user(request)
+    if not user:
+        return JsonResponse({"error": "Unauthorized"}, status=401)
+
+    # Parse JSON body
+    try:
+        payload = json.loads(request.body.decode("utf-8"))
+    except Exception:
+        return JsonResponse({"error": "Invalid JSON body"}, status=400)
+
+    question = (payload.get("question") or "").strip()
+    if not question:
+        return JsonResponse({"error": "Missing 'question' in request body"}, status=400)
+
+    # Secrets from env / settings
+    # Prefer hardcoded Google key from settings if provided (not recommended for production)
+    google_api_key = getattr(settings, "HARDCODED_GOOGLE_API_KEY", None)
+    if not google_api_key:
+        # fallback to env var
+        google_api_key = os.environ.get("GOOGLE_API_KEY")
+    db_url = (
+        os.environ.get("CHAT_DATABASE_URL")
+        or os.environ.get("DATABASE_URL")
+        or getattr(settings, "DATABASE_URL", None)
+    )
+
+    if not google_api_key:
+        return JsonResponse({"error": "GOOGLE_API_KEY not configured in environment"}, status=500)
+    if not db_url:
+        return JsonResponse({"error": "DATABASE_URL not configured in environment"}, status=500)
+
+    # Build LLM (Gemini)
+    try:
+        try:
+            from langchain_google_genai import ChatGoogleGenerativeAI  # preferred
+        except Exception:
+            # Legacy import path fallback is not common; keep single import.
+            from langchain_google_genai import ChatGoogleGenerativeAI
+
+        model_name = (
+            getattr(settings, "GOOGLE_MODEL", None)
+            or getattr(settings, "GENAI_MODEL", None)
+            or os.environ.get("GOOGLE_MODEL")
+            or os.environ.get("GENAI_MODEL")
+            or "gemini-2.5-pro"
+        )
+        llm = ChatGoogleGenerativeAI(google_api_key=google_api_key, model=model_name, temperature=0)
+    except Exception as e:
+        return JsonResponse({"error": "Failed to initialize Gemini LLM", "details": str(e)}, status=500)
+
+    # Build SQL database utility (normalize URL, add driver, strip problematic params)
+    def _normalize_db_url(raw: str):
+        if not raw:
+            return raw, raw, {}
+        parsed = urlparse(raw)
+        scheme = parsed.scheme
+        query_pairs = dict(parse_qsl(parsed.query))
+        # Remove channel_binding which breaks many clients
+        query_pairs.pop("channel_binding", None)
+        # Ensure sslmode for remote DBs (keep if present)
+        if parsed.hostname not in (None, "localhost", "127.0.0.1"):
+            query_pairs.setdefault("sslmode", "require")
+        # Prefer explicit psycopg2 driver for Postgres
+        if scheme in ("postgres", "postgresql"):
+            scheme = "postgresql+psycopg2"
+        normalized = urlunparse(
+            (
+                scheme,
+                parsed.netloc,
+                parsed.path,
+                parsed.params,
+                urlencode(query_pairs, doseq=True),
+                parsed.fragment,
+            )
+        )
+        # Mask password for logs/errors
+        masked_netloc = parsed.netloc
+        if "@" in parsed.netloc:
+            creds, host = parsed.netloc.split("@", 1)
+            if ":" in creds:
+                user, _pwd = creds.split(":", 1)
+                masked_netloc = f"{user}:***@{host}"
+            else:
+                masked_netloc = f"***@{host}"
+        masked = urlunparse((scheme, masked_netloc, parsed.path, parsed.params, urlencode(query_pairs, doseq=True), parsed.fragment))
+        # Engine args: pass sslmode via connect_args for psycopg2 if present
+        engine_args = {}
+        if scheme.startswith("postgresql+") and query_pairs.get("sslmode"):
+            engine_args = {"connect_args": {"sslmode": query_pairs.get("sslmode")}}
+        return normalized, masked, engine_args
+
+    try:
+        # Try multiple import paths for broad LangChain compatibility
+        SQLDatabase = None
+        import_err = None
+        try:
+            from langchain_community.utilities import SQLDatabase as _SQLDatabase  # preferred modern path
+            SQLDatabase = _SQLDatabase
+        except Exception as ie1:
+            import_err = ie1
+            try:
+                from langchain_community.utilities.sql_database import SQLDatabase as _SQLDatabase  # alt path
+                SQLDatabase = _SQLDatabase
+            except Exception as ie2:
+                import_err = ie2
+                try:
+                    from langchain.sql_database import SQLDatabase as _SQLDatabase  # older LC
+                    SQLDatabase = _SQLDatabase
+                except Exception as ie3:
+                    import_err = ie3
+                    try:
+                        from langchain.utilities import SQLDatabase as _SQLDatabase  # legacy fallback
+                        SQLDatabase = _SQLDatabase
+                    except Exception as ie4:
+                        import_err = ie4
+        if SQLDatabase is None:
+            raise import_err or ImportError("Unable to import SQLDatabase from LangChain.")
+
+        normalized_url, masked_url, engine_args = _normalize_db_url(db_url)
+        db = None
+        try:
+            db = SQLDatabase.from_uri(normalized_url, engine_args=engine_args)
+        except Exception as inner:
+            # Fallback to local sqlite if available
+            sqlite_file = Path(settings.BASE_DIR) / "db.sqlite3"
+            if sqlite_file.exists():
+                sqlite_url = f"sqlite:///{sqlite_file.resolve().as_posix()}"
+                db = SQLDatabase.from_uri(sqlite_url)
+            else:
+                raise inner
+    except Exception as e:
+        err = str(e)
+        low = err.lower()
+        hint = None
+        if "no module named 'sqlalchemy'" in low or "no module named sqlalchemy" in low:
+            hint = "Install SQLAlchemy: pip install sqlalchemy"
+        elif "no module named 'langchain_community'" in low or "no module named langchain_community" in low:
+            hint = "Install LangChain community: pip install langchain-community"
+        elif "no module named 'langchain.utilities'" in low or "no module named langchain.utilities" in low:
+            hint = "Install LangChain community: pip install langchain-community (newer LC split utilities to langchain-community)"
+        elif "no module named 'langchain.sql_database'" in low or "no module named langchain.sql_database" in low:
+            hint = "Upgrade/downgrade LangChain or install langchain-community: pip install -U langchain langchain-community"
+        elif "no module named 'langchain'" in low:
+            hint = "Install LangChain: pip install langchain"
+        elif "psycopg2" in low:
+            hint = "Install driver: pip install psycopg2-binary"
+        return JsonResponse(
+            {
+                "error": "Failed to connect SQLDatabase",
+                "details": err,
+                "hint": hint,
+                "db_url": masked_url if 'masked_url' in locals() else None,
+            },
+            status=500,
+        )
+
+    # Create an agent/chain able to generate SQL and query the DB
+    chain = None
+    agent_err = None
+    try:
+        try:
+            from langchain_community.agent_toolkits import (
+                SQLDatabaseToolkit,
+                create_sql_agent,
+            )
+        except Exception:
+            from langchain.agents.agent_toolkits import (
+                SQLDatabaseToolkit,
+                create_sql_agent,
+            )
+
+        toolkit = SQLDatabaseToolkit(db=db, llm=llm)
+        # Try agent creation without forcing an AgentType (more LLM-agnostic)
+        try:
+            chain = create_sql_agent(llm=llm, toolkit=toolkit, verbose=False)
+        except Exception:
+            # Fallback to an agent type compatible with non-OpenAI models
+            try:
+                from langchain.agents import AgentType
+                try:
+                    chain = create_sql_agent(
+                        llm=llm,
+                        toolkit=toolkit,
+                        verbose=False,
+                        agent_type=AgentType.ZERO_SHOT_REACT_DESCRIPTION,
+                    )
+                except Exception:
+                    chain = create_sql_agent(
+                        llm=llm,
+                        toolkit=toolkit,
+                        verbose=False,
+                        agent_type=AgentType.STRUCTURED_CHAT_ZERO_SHOT_REACT_DESCRIPTION,
+                    )
+            except Exception:
+                chain = None
+    except Exception as e:
+        agent_err = e
+
+    # Fallback to SQLDatabaseChain if agent creation failed
+    if chain is None:
+        try:
+            try:
+                from langchain_experimental.sql import SQLDatabaseChain
+            except Exception:
+                # Older import path
+                from langchain.chains import SQLDatabaseChain
+            chain = SQLDatabaseChain.from_llm(llm, db, verbose=False)
+        except Exception as e:
+            return JsonResponse({
+                "error": "Failed to initialize SQL agent/chain",
+                "details": f"agent_error={agent_err}; chain_error={e}",
+            }, status=500)
+
+    # Execute the query through the chain/agent with 429-aware fallback
+    def _invoke_chain(ch):
+        if hasattr(ch, "run"):
+            return ch.run(question)
+        res = ch.invoke({"input": question})
+        if isinstance(res, dict):
+            return res.get("output") or res.get("result") or str(res)
+        return str(res)
+
+    try:
+        answer = _invoke_chain(chain)
+    except Exception as e:
+        e_str = str(e)
+        low = e_str.lower()
+        # Detect rate limit / quota exceeded
+        if "429" in low or "quota" in low or "rate" in low:
+            # Try fallback model if defined and different
+            primary_model = (
+                getattr(settings, "GOOGLE_MODEL", None)
+                or getattr(settings, "GENAI_MODEL", None)
+                or os.environ.get("GOOGLE_MODEL")
+                or os.environ.get("GENAI_MODEL")
+                or "gemini-2.5-pro"
+            )
+            fallback_model = (
+                getattr(settings, "GOOGLE_MODEL_FALLBACK", None)
+                or os.environ.get("GOOGLE_MODEL_FALLBACK")
+                or os.environ.get("GENAI_MODEL_FALLBACK")
+                or "gemini-1.5-flash-latest"
+            )
+            retry_after = None
+            # Attempt to parse suggested retry delay
+            import re
+            m = re.search(r"retry\s*in\s*([0-9]+(?:\.[0-9]+)?)s", e_str, re.IGNORECASE)
+            if m:
+                try:
+                    retry_after = float(m.group(1))
+                except Exception:
+                    retry_after = None
+            if fallback_model:
+                try:
+                    from langchain_google_genai import ChatGoogleGenerativeAI
+
+                    def _try_model(model_name: str):
+                        try:
+                            llm_fb = ChatGoogleGenerativeAI(google_api_key=google_api_key, model=model_name, temperature=0)
+                        except Exception:
+                            return None
+                        # Rebuild agent with fallback LLM
+                        try:
+                            try:
+                                from langchain_community.agent_toolkits import (
+                                    SQLDatabaseToolkit,
+                                    create_sql_agent,
+                                )
+                            except Exception:
+                                from langchain.agents.agent_toolkits import (
+                                    SQLDatabaseToolkit,
+                                    create_sql_agent,
+                                )
+                            toolkit_fb = SQLDatabaseToolkit(db=db, llm=llm_fb)
+                            try:
+                                chain_fb = create_sql_agent(llm=llm_fb, toolkit=toolkit_fb, verbose=False)
+                            except Exception:
+                                chain_fb = None
+                            if chain_fb is None:
+                                try:
+                                    try:
+                                        from langchain_experimental.sql import SQLDatabaseChain
+                                    except Exception:
+                                        from langchain.chains import SQLDatabaseChain
+                                    chain_fb = SQLDatabaseChain.from_llm(llm_fb, db, verbose=False)
+                                except Exception:
+                                    chain_fb = None
+                            if chain_fb is None:
+                                return None
+                            try:
+                                ans = _invoke_chain(chain_fb)
+                                return {"answer": str(ans).strip() or "", "model_used": model_name}
+                            except Exception:
+                                return None
+                        except Exception:
+                            return None
+
+                    tried = set()
+                    candidates = []
+                    # Avoid retrying the same primary model; add fallback only if different
+                    if fallback_model != primary_model:
+                        candidates.append(fallback_model)
+                    # Try a "-latest" variant too
+                    if not fallback_model.endswith("-latest"):
+                        candidates.append(fallback_model + "-latest")
+                    # Add widely available stable models
+                    candidates.extend(["gemini-1.5-flash", "gemini-1.5-flash-latest", "gemini-1.5-pro", "gemini-1.5-pro-latest"])
+                    for cand in candidates:
+                        if cand in tried:
+                            continue
+                        tried.add(cand)
+                        out = _try_model(cand)
+                        if out is not None:
+                            return JsonResponse(out, status=200)
+                except Exception:
+                    # ignore and fall through to 429
+                    pass
+            # If fallback not possible/successful, return 429 with retry info
+            payload = {"error": "Agent execution failed: rate limit", "details": e_str}
+            if retry_after is not None:
+                payload["retry_after_seconds"] = retry_after
+            return JsonResponse(payload, status=429)
+        # Non-rate-limit error
+        return JsonResponse({"error": "Agent execution failed", "details": e_str}, status=500)
+
+    return JsonResponse({"answer": str(answer).strip() or ""}, status=200)

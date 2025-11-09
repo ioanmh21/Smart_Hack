@@ -128,3 +128,15 @@ MEDIA_ROOT = BASE_DIR / 'media'
 # https://docs.djangoproject.com/en/5.2/ref/settings/#default-auto-field
 
 DEFAULT_AUTO_FIELD = 'django.db.models.BigAutoField'
+
+# WARNING: Hardcoding API keys is insecure. Use only for local/testing.
+# Removed OpenAI support; using Google Gemini only.
+
+# Hardcoded Google Gemini API key (optional, testing only). If set, backend will use it
+# instead of the GOOGLE_API_KEY environment variable.
+HARDCODED_GOOGLE_API_KEY = "AIzaSyAsfFg1APagSZGt9dhYHL9YojwafqE52eQ"
+
+# Preferred Gemini model to use for the RAG SQL agent.
+# Can be overridden via env vars GOOGLE_MODEL or GENAI_MODEL.
+GOOGLE_MODEL = "gemini-2.5-flash"
+GOOGLE_MODEL_FALLBACK = "gemini-2.5-flash"
