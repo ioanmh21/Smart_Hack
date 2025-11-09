@@ -155,7 +155,6 @@ curl -X POST http://127.0.0.1:8000/api/chat/sql/ \
 
 ---
 
-Întrebări? Idei? Deschide un ticket sau spune direct în chat ce ai vrea să adăugăm. 😊
 
 ## Galerie (capturi)
 - Planșa de lucru (SVG extras dintr-o planșă imagine și integrat inline):
