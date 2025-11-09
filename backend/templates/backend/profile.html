@@ -1,0 +1,86 @@
+<!DOCTYPE html>
+{% load static %}
+<html>
+    <head>
+        <link rel="stylesheet" href="{% static 'backend/style.css' %}">
+        <title>My Reservations</title>
+    </head>
+    <body class="profile-page">
+        <header class="site-header">
+            <nav class="nav">
+                <div class="nav__brand">
+                    <span class="nav__logo">BK</span>
+                    <div class="nav__text">
+                        <p class="nav__label">Booking</p>
+                        <p class="nav__subtitle">office planner</p>
+                    </div>
+                </div>
+                <div class="nav__meta">
+                    <a class="nav__login-link" href="{% url 'backend:landing' %}">Map</a>
+                    {% if user_name %}
+                    <div class="nav__profile">
+                        <div class="nav__avatar">{{ user_initials|default:"OS" }}</div>
+                        <div class="nav__profile-text">
+                            <p class="nav__profile-name">{{ user_name }}</p>
+                            <div class="nav__profile-actions">
+                                <a class="nav__profile-link" href="{% url 'backend:profile' %}">My reservations</a>
+                                <form method="post" action="{% url 'backend:logout' %}">
+                                    {% csrf_token %}
+                                    <button class="nav__profile-link" type="submit">Log out</button>
+                                </form>
+                            </div>
+                        </div>
+                    </div>
+                    {% else %}
+                    <a class="nav__login-link" href="{% url 'backend:login' %}">Login</a>
+                    {% endif %}
+                </div>
+            </nav>
+        </header>
+
+        <main class="profile">
+            <section class="profile__header">
+                <p class="profile__eyebrow">Your account</p>
+                <h1 class="profile__title">My reservations</h1>
+                <p class="profile__copy">
+                    Review all the spaces you booked and cancel when plans change.
+                </p>
+            </section>
+
+            {% if messages %}
+            <div class="profile__alerts">
+                {% for message in messages %}
+                    <div class="profile-alert profile-alert--{{ message.tags|default:'info' }}">
+                        {{ message }}
+                    </div>
+                {% endfor %}
+            </div>
+            {% endif %}
+
+            {% if reservation_cards %}
+            <ul class="profile-list">
+                {% for card in reservation_cards %}
+                <li class="profile-card">
+                    <div class="profile-card__body">
+                        <p class="profile-card__label">{{ card.reservation.obiect.tip_obiect }}</p>
+                        <h3 class="profile-card__title">{{ card.reservation.obiect.id_css }}</h3>
+                        <p class="profile-card__time">
+                            {{ card.display_date }} &bull; {{ card.display_time }}
+                        </p>
+                    </div>
+                    <form class="profile-card__actions" method="post" action="{% url 'backend:cancel_reservation' %}">
+                        {% csrf_token %}
+                        <input type="hidden" name="reservation_id" value="{{ card.reservation.id_rez }}">
+                        <button type="submit" class="profile-card__button">Cancel</button>
+                    </form>
+                </li>
+                {% endfor %}
+            </ul>
+            {% else %}
+            <p class="profile__empty">No active reservations yet. Head back to the map to book a space.</p>
+            {% endif %}
+        </main>
+
+        <script src="{% static 'backend/index.js' %}"></script>
+    </body>
+</html>

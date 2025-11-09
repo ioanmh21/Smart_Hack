@@ -1,0 +1,82 @@
+<!DOCTYPE html>
+{% load static %}
+<html>
+    <head>
+        <link rel="stylesheet" href="{% static 'backend/style.css' %}">
+        <title>Booking – Login</title>
+    </head>
+    <body>
+        <header class="site-header">
+            <nav class="nav">
+                <div class="nav__brand">
+                    <span class="nav__logo">BK</span>
+                    <div class="nav__text">
+                        <p class="nav__label">Booking</p>
+                        <p class="nav__subtitle">office planner</p>
+                    </div>
+                </div>
+                <div class="nav__meta">
+                    <a class="nav__login-link" href="{% url 'backend:landing' %}">Back to map</a>
+                    <div class="nav__clock" id="navClock">
+                        <span class="nav__clock-date">-- --</span>
+                        <span class="nav__clock-time">--:--</span>
+                    </div>
+                </div>
+            </nav>
+        </header>
+        <section class="login login--centered">
+            <div class="login__panel">
+                <p class="login__eyebrow">Team Access</p>
+                <h2 class="login__title">Gestioneaza rezervarile</h2>
+
+                {% if message %}
+                <div class="login__alert login__alert--{{ message_type|default:'info' }}">
+                    {{ message }}
+                </div>
+                {% endif %}
+
+                <form class="login__form" method="post">
+                    {% csrf_token %}
+                    <input type="hidden" name="action" value="login">
+                    <label class="login__label">
+                        Work email
+                        <input type="email" name="email" value="{{ login_initial }}" placeholder="alex@orbitoffice.com" required>
+                    </label>
+                    <label class="login__label">
+                        Password
+                        <input type="password" name="password" placeholder="••••••••" required>
+                    </label>
+                    <div class="login__actions">
+                        <label class="login__remember">
+                            <input type="checkbox">
+                            Keep me signed in
+                        </label>
+                        <button type="button" class="login__link" disabled>Forgot password?</button>
+                    </div>
+                    <button type="submit" class="login__submit">Continue</button>
+                </form>
+
+                <div class="login__divider">
+                    <span>Nu ai cont?</span>
+                </div>
+
+                <form class="login__form login__form--secondary" method="post">
+                    {% csrf_token %}
+                    <input type="hidden" name="action" value="register">
+                    <label class="login__label">
+                        Work email
+                        <input type="email" name="email" value="{{ register_initial }}" placeholder="alex@orbitoffice.com" required>
+                    </label>
+                    <label class="login__label">
+                        Password
+                        <input type="password" name="password" placeholder="Seteaza o parola sigura" required>
+                    </label>
+                    <button type="submit" class="login__submit login__submit--outline">Creeaza cont</button>
+                </form>
+
+                <p class="login__meta">Ai deja un cont? Foloseste formularul de mai sus pentru a te autentifica.</p>
+            </div>
+        </section>
+        <script src="{% static 'backend/index.js' %}"></script>
+    </body>
+</html>
